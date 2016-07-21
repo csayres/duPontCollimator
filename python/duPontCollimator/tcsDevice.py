@@ -6,7 +6,7 @@ import numpy
 from twisted.internet import task
 
 from .baseDevice import BaseDevice, DeviceClientFactory
-import config
+import .config
 
 Slewing = "Slewing"
 NotSlewing = "NotSlewing"
