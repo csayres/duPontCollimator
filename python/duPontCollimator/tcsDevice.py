@@ -53,8 +53,9 @@ statusFieldDict = collections.OrderedDict((
    ("inpdc", dms2deg),
    ("st", hms2deg),
    ("pos", castPos),
-   ("state", castTelState),
    ("ttruss", float),
+   ("telel", float),
+   ("state", castTelState), # important that state remains last in this list! for checking new slew
 ))
 
 class TCSDevice(Protocol):
@@ -90,6 +91,10 @@ class TCSDevice(Protocol):
     @property
     def temp(self):
         return self.ttruss
+
+    @property
+    def elevation(self):
+        return self.telel
 
     @property
     def isSlewing(self):
@@ -142,6 +147,8 @@ class TCSDevice(Protocol):
 
     def getStatus(self):
         # print("getStatus")
+        # clear status to ensure we get a fresh one
+        self.clearStatus()
         self.statusCmdQueue = statusFieldDict.keys()
         self.sendNextStatus()
 
