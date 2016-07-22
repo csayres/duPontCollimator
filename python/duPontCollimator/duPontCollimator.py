@@ -5,30 +5,37 @@ import collections
 import numpy
 
 from twisted.internet.protocol import Protocol, Factory
+from twisted.internet import reactor
 
-from .config import focusInterval, getCollimation, minTranslation, minTipTilt
+from .config import focusInterval, getCollimation, minTranslation, minTipTilt, minFocusMove, getFocus
 
-ON = "ON"
-OFF = "OFF"
+ON = "on"
+OFF = "off"
 
 helpString ="""
 Commands:
 
 help
-Show this help.
+--Show this help.
 
 status
-Show current status.
+--Show current status.
 
-focus [off|on]
-Apply focus model. if off or on specified start or stop the timer.
-Slews automatically trigger focus move to input RA and Dec coords.
+focus [on] [off] [set] [force]
+--Apply focus model. If "on" specified, apply focus AND start the timer.
+--If "off" specified, stop timer (if active) and don't apply focus. If "set" specified,
+--use current focus and temperature for focus model zero points. If force specified,
+--move the mirror even if move is below minimum offset threshold.
+--"off" argument may not be present with either "on" nor "force"
+--but "off" is valid with "set", in which case the focus/temp baselines are set
+--but the focus move is not applied.
+
 
 collimate [force] [target]
-Apply flexure model.  If target specified move to collimation
-for input RA and Dec coords, else collimate to current telescope
-position. If force specified, move themirror even if below minimum
-threshold.
+--Apply flexure model.  If target specified move to collimation
+--for input RA and Dec coords, else collimate to current telescope
+--position. If force specified, move the mirror even if move is below
+--minimum offset threshold.
 """
 
 
@@ -39,7 +46,6 @@ class DuPontCollimator(Protocol):
         self.focusBase = None
         self.tempBase = None
         self.autofocus = OFF
-        self.autofocusInterval = focusInterval
 
     def getTargetCollimationUpdate(self):
         return getCollimation(self.tcsDevice.targetHA, self.tcsDevice.targetDec)
@@ -72,10 +78,12 @@ class DuPontCollimator(Protocol):
         self.parseCommand(userInput)
 
     def reply(self, replyToUser):
+        # send a string back to the user
         replyToUser = replyToUser.strip() + "\n"
         self.transport.write(replyToUser)
 
     def parseCommand(self, userInput):
+        # parse an incomming user command
         userInput = userInput.lower().strip()
         if not userInput:
             return
@@ -96,17 +104,38 @@ class DuPontCollimator(Protocol):
                     doTarget == True
                 else:
                     self.reply("Bad User Input: %s"%arg)
+                    self.reply(helpString)
                     return
             self.updateCollimation(force=doForce, target=doTarget)
+        elif userInput.startswith("focus"):
+            timer = None
+            setFocus = False
+            force = False
+            args = userInput.split()
+            if OFF in args and ON in args or "force" in args:
+                self.reply("Bad User Input: may not specify 'off' with 'on' nor 'force'")
+                self.reply(helpString)
+                return
+            for arg in args:
+                if arg == "focus":
+                    continue
+                elif arg == ON:
+                    timer = ON
+                elif arg == OFF:
+                    timer = OFF
+                elif arg == "set":
+                    setFocus = True
+                elif arg == "force":
+                    force = True
+                else:
+                    self.reply("Bad User Input: %s"%arg)
+                    self.reply(helpString)
+                    return
+            self.updateFocus(timer=timer, setFocus=setFocus, userCommanded=True, force=force)
+
         else:
             self.reply("Bad User Input: %s"%userInput)
-        # print("got %s"%userInput)
-        # self.reply(str(self.tcsDevice.dec))
-        # self.reply(str(self.tcsDevice.ha))
-        # self.reply(str(self.tcsDevice.targetDec))
-        # self.reply(str(self.tcsDevice.targetHA))
-        # self.reply(str(self.m2Device.state))
-        # self.reply(str(self.m2Device.orientation))
+            self.reply(helpString)
 
     def formatCollimationStr(self, collimationDict):
         collStrList = []
@@ -117,7 +146,7 @@ class DuPontCollimator(Protocol):
     def statusLines(self):
         focusBaseStr = "None" if self.focusBase is None else "%.1f"%self.focusBase
         tempBaseStr = "None" if self.tempBase is None else "%.1f"%self.tempBase
-        afStr = OFF if self.autofocus==OFF else "%.2f seconds"%self.autofocusInterval
+        afStr = OFF if self.autofocus==OFF else "%.2f seconds"%focusInterval
         collTargUpdate = self.getTargetCollimationUpdate()
         collCurrUpdate = self.getCurrentCollimationUpdate()
         deltaTargColl = self.getDeltaCollimation(collTargUpdate)
@@ -126,7 +155,7 @@ class DuPontCollimator(Protocol):
         statusLines = [
             "[Focus, Temp] zeropoint: [%s, %s]"%(focusBaseStr, tempBaseStr),
             "Autofocus updates: %s"%afStr,
-            "Delta-Collimation values:",
+            "Collimation offset values:",
             "--Target: %s"%self.formatCollimationStr(deltaTargColl),
             "--Current: %s"%self.formatCollimationStr(deltaCurrColl),
         ]
@@ -135,25 +164,70 @@ class DuPontCollimator(Protocol):
     def updateCollimation(self, force=False, target=False):
         if target:
             newColl = self.getTargetCollimationUpdate()
-            deltaColl = self.getDeltaCollimation(newColl)
         else:
-            newColl = self.getTargetCollimationUpdate()
-            deltaColl = self.getDeltaCollimation(newColl)
+            newColl = self.getCurrentCollimationUpdate()
+        deltaColl = self.getDeltaCollimation(newColl)
         if not force:
             # check limits before proceeding
             overMinTilt = numpy.max([numpy.abs(deltaColl["tip"]), numpy.abs(deltaColl["tilt"])]) > minTipTilt
             overMinTrans = numpy.max([numpy.abs(deltaColl["X"]), numpy.abs(deltaColl["Y"])]) > minTranslation
             doMove = overMinTilt or overMinTrans
             if not doMove:
-                self.reply("Delta collimation too small for move:")
+                self.reply("Collimation offset too small for move:")
                 self.reply(self.formatCollimationStr(deltaColl))
                 return
+        if not self.m2Device.isReady:
+            self.reply("M2 device not ready to collimate. State=%s Galil=%s"%(str(self.m2Device.state), str(self.m2Device.galil)))
+            return
         # command the new collimation with current focus value
         currentFocus = self.m2Device.orientation[0]
         self.reply("Updating collimation: ")
         self.reply(self.formatCollimationStr(newColl))
         newFullOrientation = [currentFocus] + newColl.values()
         self.m2Device.move(newFullOrientation)
+
+    def updateFocus(self, timer=None, setFocus=None, userCommanded=False, force=False):
+        # if userCommanded is True, focus was commanded by the user,
+        # do it regardless of the timer toggle.
+        # if userCommanded is False, this was triggered
+        # by the timer so check for timer toggle before applying
+        # focus update.
+        timerToggledOn = False
+        timerToggledOff = False
+        if setFocus:
+            self.focusBase = self.m2Device.focus
+            self.tempBase = self.tcsDevice.temp
+            self.reply("Setting baseFocus=%.2f baseTemmp=%.2f"%(self.focusBase, self.tcsDevice.temp))
+        if timer == OFF:
+            if self.autofocus == ON:
+                timerToggledOff = True
+            self.autofocus = OFF
+        elif timer == ON:
+            if self.autofocus == OFF:
+                timerToggledOn = True
+            self.autofocus = ON
+        if userCommanded and timerToggledOff or not userCommanded and self.autofocus == OFF:
+            # focus updates just switched off or
+            # focus update fired on a timer
+            # but autofocus is was off, so
+            # don't do anything
+            return
+        if userCommanded and timerToggledOn or not userCommanded and self.autofocus==ON:
+            # only fire timer if
+            # this is a non user commanded autofocus
+            # or if this is a user commanded focus update that just
+            # toggled autofocus from off to on
+            reactor.callLater(self.updateFocus, focusInterval)
+        newFocusValue = getFocus(self.focusBase, self.tempBase, self.tcsDevice.temp, self.tcsDevice.elevation)
+        deltaFocus = newFocusValue - self.m2Device.focus
+        if numpy.abs(deltaFocus) < minFocusMove and not force:
+            self.reply("Focus offset %.2f too small to apply"%deltaFocus)
+            return
+        if not self.m2Device.isReady:
+            self.reply("M2 device not ready to focus. State=%s Galil=%s"%(str(self.m2Device.state), str(self.m2Device.galil)))
+            return
+        self.reply("Updating focus to %.2f"%newFocusValue)
+        self.m2Device.move([newFocusValue])
 
 def getFactory(m2Device, tcsDevice):
     # construct m2Device and tcsDevcie have
