@@ -1,7 +1,7 @@
 from twisted.internet import reactor, defer
-from twisted.internet.endpoints import TCP4ClientEndpoint
+from twisted.internet.endpoints import TCP4ClientEndpoint, TCP4ServerEndpoint
 
-from duPontCollimator import config, tcsDevice, m2Device
+from duPontCollimator import config, tcsDevice, m2Device, duPontCollimator
 
 tcsDev = None
 m2Dev = None
@@ -24,6 +24,9 @@ def bothConnected(result):
             break
     else:
         print("Both connections ok...starting server")
+        endpoint = TCP4ServerEndpoint(reactor, config.userPort)
+        Factory = duPontCollimator.getFactory(tcsDev, m2Dev)
+        endpoint.listen(Factory())
 
 # begin connection to tcs
 point = TCP4ClientEndpoint(reactor, config.tcsHost, config.tcsPort)

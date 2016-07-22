@@ -4,8 +4,9 @@ import traceback
 import sys
 
 from twisted.internet import task
+from twisted.internet.protocol import Protocol, ClientFactory
+#http://twistedmatrix.com/documents/12.1.0/core/howto/clients.html
 
-from .baseDevice import BaseDevice, DeviceClientFactory
 from .config import statusRefreshRate
 
 Done = "Done"
@@ -17,7 +18,7 @@ Off = "off"
 validMotionStates = [Done, Moving, Failed, Error]
 validGalilStates = [On, Off]
 
-class M2Device(BaseDevice):
+class M2Device(Protocol):
 
     def __init__(self):
         self.state = None
@@ -90,7 +91,7 @@ class M2Device(BaseDevice):
             print("Error trying to parse M2 response: %s"%replyStr)
             traceback.print_exc(file=sys.stdout)
 
-class M2Fact(DeviceClientFactory):
+class M2Fact(ClientFactory):
     def buildProtocol(self, addr):
         return M2Device()
 

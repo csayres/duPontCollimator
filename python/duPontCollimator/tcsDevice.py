@@ -7,9 +7,10 @@ import sys
 import numpy
 
 from twisted.internet import task
+from twisted.internet.protocol import Protocol, ClientFactory
+#http://twistedmatrix.com/documents/12.1.0/core/howto/clients.html
 
-from .baseDevice import BaseDevice, DeviceClientFactory
-from .config import tcsHost, tcsPort, statusRefreshRate
+from .config import statusRefreshRate
 
 Slewing = "Slewing"
 NotSlewing = "NotSlewing"
@@ -53,9 +54,10 @@ statusFieldDict = collections.OrderedDict((
    ("st", hms2deg),
    ("pos", castPos),
    ("state", castTelState),
+   ("ttruss", float),
 ))
 
-class TCSDevice(BaseDevice):
+class TCSDevice(Protocol):
 
     def __init__(self, slewCallback = None):
         # initialize all status fields as
@@ -73,11 +75,21 @@ class TCSDevice(BaseDevice):
 
     @property
     def targetDec(self):
-        return self.pos[1] if self.pos is not None else None
+        return self.inpdc if self.inpdc is not None else None
 
     @property
-    def targetRA(self):
-        return self.ha[1] if self.pos is not None else None
+    def targetHA(self):
+        st = self.st
+        ra = self.inpra
+        if st is None or ra is None:
+            return None
+        else:
+            ha = st - ra
+            return ha
+
+    @property
+    def temp(self):
+        return self.ttruss
 
     @property
     def isSlewing(self):
@@ -97,14 +109,14 @@ class TCSDevice(BaseDevice):
 
     def dataReceived(self, data):
         # called each time data is output from tcs
-        data = data.strip()
-        if not self.statusCmdQueue:
-            # ignore unsolicited output
-            print("TCS ignoring output %s"%data)
-            return
-        # print("tcs says: %s"%(str(data)))
-        currCmd = self.statusCmdQueue.pop(0) #pop from list and parse output
         try:
+            data = str(data.strip())
+            if not self.statusCmdQueue:
+                # ignore unsolicited output
+                print("TCS ignoring output %s"%data)
+                return
+            # print("tcs says: %s"%(str(data)))
+            currCmd = self.statusCmdQueue.pop(0) #pop from list and parse output
             newValue = statusFieldDict[currCmd](data)
             # check if we just moved from not slew, to a slew state
             if newValue == Slewing and not self.isSlewing and self.slewCallback is not None:
@@ -141,8 +153,7 @@ class TCSDevice(BaseDevice):
         self.slewCallback = slewCallback
 
 
-
-class TCSFact(DeviceClientFactory):
+class TCSFact(ClientFactory):
     def buildProtocol(self, addr):
         return TCSDevice()
 
