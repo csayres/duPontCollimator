@@ -1,12 +1,15 @@
 from __future__ import division, absolute_import
 
 import collections
+import traceback
+import sys
+
 import numpy
 
 from twisted.internet import task
 
 from .baseDevice import BaseDevice, DeviceClientFactory
-import .config
+from .config import tcsHost, tcsPort, statusRefreshRate
 
 Slewing = "Slewing"
 NotSlewing = "NotSlewing"
@@ -44,13 +47,13 @@ def castTelState(tcsStateResponse):
 def castPos(tcsPosStr):
     return [numpy.degrees(float(x)) for x in tcsPosStr.split()]
 
-statusFieldDict = collections.OrderedDict(
+statusFieldDict = collections.OrderedDict((
    ("inpra", hms2deg),
    ("inpdc", dms2deg),
    ("st", hms2deg),
    ("pos", castPos),
    ("state", castTelState),
-)
+))
 
 class TCSDevice(BaseDevice):
 
@@ -59,9 +62,6 @@ class TCSDevice(BaseDevice):
         # attributes on this class with value none
         self.statusCmdQueue = [] # this is populated by self.getStatus()
         self.slewCallback = slewCallback
-        # begin status timer
-        loop = task.LoopingCall(self.getStatus)
-        loop.start(config.statusRefreshRate)
 
     @property
     def dec(self):
@@ -83,6 +83,11 @@ class TCSDevice(BaseDevice):
     def isSlewing(self):
         return self.state == Slewing
 
+    def connectionMade(self):
+        print("TCS connection made, starting status polling")
+        loop = task.LoopingCall(self.getStatus)
+        loop.start(statusRefreshRate)
+
     def clearStatus(self):
         # set all status pieces to None,
         # to ensure we get a fresh status
@@ -97,6 +102,7 @@ class TCSDevice(BaseDevice):
             # ignore unsolicited output
             print("TCS ignoring output %s"%data)
             return
+        # print("tcs says: %s"%(str(data)))
         currCmd = self.statusCmdQueue.pop(0) #pop from list and parse output
         try:
             newValue = statusFieldDict[currCmd](data)
@@ -107,9 +113,10 @@ class TCSDevice(BaseDevice):
                 # callback all status has been refreshed
                 print("Slewing state detected")
                 self.slewCallback()
-            self.setattr(self, currCmd, newValue)
+            setattr(self, currCmd, newValue)
         except:
             print("TCS could not parse %s for command %s"%(data, currCmd))
+            traceback.print_exc(file=sys.stdout)
         # if more status commands are on queue, run next one
         if self.statusCmdQueue:
             # more commands on queue
@@ -117,10 +124,14 @@ class TCSDevice(BaseDevice):
             self.sendNextStatus()
 
     def sendNextStatus(self):
-        self.transport.write("%s\r\n"%self.statusCmdQueue[0])
+        nextCmd = self.statusCmdQueue[0]
+        # print("writing to tcs: %s"%(str(nextCmd)))
+        self.transport.write("%s\r\n"%nextCmd)
 
     def getStatus(self):
+        # print("getStatus")
         self.statusCmdQueue = statusFieldDict.keys()
+        self.sendNextStatus()
 
     def addSlewCallback(self, slewCallback):
         """each time telescpe goes from
@@ -134,11 +145,6 @@ class TCSDevice(BaseDevice):
 class TCSFact(DeviceClientFactory):
     def buildProtocol(self, addr):
         return TCSDevice()
-
-def connectTCS():
-    from twisted.internet import reactor
-    reactor.connectTCP(conifg.tcsHost, config.tcsPort, TCSFact())
-
 
 
 
