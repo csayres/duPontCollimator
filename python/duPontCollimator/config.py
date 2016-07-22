@@ -11,7 +11,7 @@ statusRefreshRate = 1 # seconds
 minFocusMove = 5 # microns
 minTipTilt = 1 # arcseconds
 minTranslation = 10 # microns
-focusInterval = 60 # seconds
+focusInterval = 5 # seconds
 focusPerDegC = 70 # um per degree C
 focusPerDegElevation = 0 # um per degree elevation
 

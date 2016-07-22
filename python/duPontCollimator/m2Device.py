@@ -44,7 +44,7 @@ class M2Device(Protocol):
         Note: increasing focus means increasing spacing between primary and
         secondary mirrors.
         """
-        print ("want to move: ", valueList)
+        # print ("want to move: ", valueList)
         if not self.isReady:
             print("Not applying move, mirror is not ready")
             return
@@ -72,9 +72,12 @@ class M2Device(Protocol):
         this is the status string State=DONE Ori=12500.0, -0.0, -0.0, -0.0, 0.0 Lamps=off Galil=off
         """
         # lowerify everything
-        print("M2 reply: ", replyStr)
+        # print("M2 reply: ", replyStr)
         try:
             replyStr = replyStr.strip().lower()
+            if replyStr.startswith("error"):
+                # don't parse an error
+                return
             if replyStr == "ok":
                 # ok returned from a move, do nothing
                 return

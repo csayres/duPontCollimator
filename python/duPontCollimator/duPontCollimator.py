@@ -5,7 +5,7 @@ import collections
 import numpy
 
 from twisted.internet.protocol import Protocol, Factory
-from twisted.internet import reactor, task
+from twisted.internet import task
 
 from .config import focusInterval, getCollimation, minTranslation, minTipTilt, minFocusMove, getFocus
 
@@ -96,13 +96,14 @@ class DuPontCollimator(Protocol):
         elif userInput.startswith("collimate"):
             doForce = False
             doTarget = False
-            for arg in userInput.split():
+            args = userInput.split()
+            for arg in args:
                 if arg == "collimate":
                     continue
                 elif arg == "force":
-                    doForce == True
+                    doForce = True
                 elif arg == "target":
-                    doTarget == True
+                    doTarget = True
                 else:
                     self.reply("Bad User Input: %s"%arg)
                     self.reply(helpString)
@@ -113,7 +114,7 @@ class DuPontCollimator(Protocol):
             setFocus = False
             force = False
             args = userInput.split()
-            if OFF in args and ON in args or "force" in args:
+            if OFF in args and (ON in args or "force" in args):
                 self.reply("Bad User Input: may not specify 'off' with 'on' nor 'force'")
                 self.reply(helpString)
                 return
@@ -156,7 +157,10 @@ class DuPontCollimator(Protocol):
         statusLines = [
             "[Focus, Temp] zeropoint: [%s, %s]"%(focusBaseStr, tempBaseStr),
             "Autofocus updates: %s"%afStr,
-            "Collimation offset values:",
+            "Collimation absolute values:",
+            "--Target: %s"%self.formatCollimationStr(collTargUpdate),
+            "--Current: %s"%self.formatCollimationStr(collCurrUpdate),
+            "Collimation offset (delta) values:",
             "--Target: %s"%self.formatCollimationStr(deltaTargColl),
             "--Current: %s"%self.formatCollimationStr(deltaCurrColl),
         ]
@@ -164,6 +168,10 @@ class DuPontCollimator(Protocol):
 
     def updateCollimation(self, force=False, target=False):
         if target:
+            # check that HA is within 5 hours
+            if numpy.abs(self.tcsDevice.targetHA)/15. > 5:
+                self.reply("Target HA > 5hrs!!!! Not allowed, enter a new ra")
+                return
             newColl = self.getTargetCollimationUpdate()
         else:
             newColl = self.getCurrentCollimationUpdate()
@@ -201,11 +209,13 @@ class DuPontCollimator(Protocol):
             self.autofocus = OFF
             # stop the timer if active
             self.focusTimer.stop()
+            self.reply("Stopping focus interval")
             # return not doing anything!
             return
         elif timer == ON:
             self.autofocus = ON
             # call this again after the interval has elapsed
+            self.reply("Starting focus interval %.2f seconds"%focusInterval)
             self.focusTimer.start(focusInterval, now=False)
 
         if not userCommanded and self.autofocus == OFF:
@@ -215,6 +225,13 @@ class DuPontCollimator(Protocol):
             # autofocus is off timer should already be off
             # but do it again for paranoia?
             self.focusTimer.stop()
+            return
+        if None in [self.focusBase, self.tempBase]:
+            self.reply("Cannot set focus without a baseline, please issue focus set (at a good focus)")
+            self.reply(self.statusLines()[0])
+            return
+        elif None in [self.tcsDevice.temp, self.tcsDevice.elevation]:
+            self.reply("Cannot set focus, missing tcs Data, is it connected?")
             return
         newFocusValue = getFocus(self.focusBase, self.tempBase, self.tcsDevice.temp, self.tcsDevice.elevation)
         deltaFocus = newFocusValue - self.m2Device.focus
