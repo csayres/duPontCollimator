@@ -5,7 +5,7 @@ import collections
 import numpy
 
 from twisted.internet.protocol import Protocol, Factory
-from twisted.internet import reactor
+from twisted.internet import reactor, task
 
 from .config import focusInterval, getCollimation, minTranslation, minTipTilt, minFocusMove, getFocus
 
@@ -46,6 +46,7 @@ class DuPontCollimator(Protocol):
         self.focusBase = None
         self.tempBase = None
         self.autofocus = OFF
+        self.focusTimer = task.LoopingCall(self.updateFocus)
 
     def getTargetCollimationUpdate(self):
         return getCollimation(self.tcsDevice.targetHA, self.tcsDevice.targetDec)
@@ -188,36 +189,33 @@ class DuPontCollimator(Protocol):
 
     def updateFocus(self, timer=None, setFocus=None, userCommanded=False, force=False):
         # if userCommanded is True, focus was commanded by the user,
-        # do it regardless of the timer toggle.
+        # do it regardless of whether or not the timer is on or off.
         # if userCommanded is False, this was triggered
-        # by the timer so check for timer toggle before applying
+        # by the timer so check for timer state before applying
         # focus update.
-        timerToggledOn = False
-        timerToggledOff = False
         if setFocus:
             self.focusBase = self.m2Device.focus
             self.tempBase = self.tcsDevice.temp
             self.reply("Setting baseFocus=%.2f baseTemmp=%.2f"%(self.focusBase, self.tcsDevice.temp))
         if timer == OFF:
-            if self.autofocus == ON:
-                timerToggledOff = True
             self.autofocus = OFF
+            # stop the timer if active
+            self.focusTimer.stop()
+            # return not doing anything!
+            return
         elif timer == ON:
-            if self.autofocus == OFF:
-                timerToggledOn = True
             self.autofocus = ON
-        if userCommanded and timerToggledOff or not userCommanded and self.autofocus == OFF:
-            # focus updates just switched off or
-            # focus update fired on a timer
+            # call this again after the interval has elapsed
+            self.focusTimer.start(focusInterval, now=False)
+
+        if not userCommanded and self.autofocus == OFF:
+            # focus update was fired on a timer (not user commanded)
             # but autofocus is was off, so
             # don't do anything
+            # autofocus is off timer should already be off
+            # but do it again for paranoia?
+            self.focusTimer.stop()
             return
-        if userCommanded and timerToggledOn or not userCommanded and self.autofocus==ON:
-            # only fire timer if
-            # this is a non user commanded autofocus
-            # or if this is a user commanded focus update that just
-            # toggled autofocus from off to on
-            reactor.callLater(self.updateFocus, focusInterval)
         newFocusValue = getFocus(self.focusBase, self.tempBase, self.tcsDevice.temp, self.tcsDevice.elevation)
         deltaFocus = newFocusValue - self.m2Device.focus
         if numpy.abs(deltaFocus) < minFocusMove and not force:
