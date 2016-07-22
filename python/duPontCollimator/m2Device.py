@@ -26,12 +26,18 @@ class M2Device(Protocol):
         self.galil = None
 
     @property
+    def focus(self):
+        return self.orientation[0]
+
+    @property
     def isReady(self):
         # if moving or unknown, we're not ready
-        self.state != Moving or self.state is not None
+        # i think it's ok to move if galil is not off
+        return self.state != Moving or self.state is not None #\
+            # and self.galil == Off or self.galil is not None
 
     def move(self, valueList):
-        """Command an offset or absolute orientation move
+        """Command an absolute orientation move
 
         @param[in] valueList: list of 1 to 5 values specifying focus(um), tipx("), tilty("), transx(um), transy(um)
 
@@ -39,16 +45,18 @@ class M2Device(Protocol):
         secondary mirrors.
         """
         print ("want to move: ", valueList)
-        if self.isMoving:
-            print("Not applying move, mirror is busy")
+        if not self.isReady:
+            print("Not applying move, mirror is not ready")
             return
-        return
         strValList = " ".join(["%.2f"%val for val in valueList])
         cmdStr = "move %s"%strValList
         self.transport.write("%s\r\n"%cmdStr)
         # status immediately to see moving state
         # determine total time for move
         # just use focus distance as proxy (ignore)
+
+    def galilOff(self):
+        self.transport.write("galil off\r\n")
 
     def connectionMade(self):
         print("M2 connection made, starting status polling")
@@ -64,7 +72,7 @@ class M2Device(Protocol):
         this is the status string State=DONE Ori=12500.0, -0.0, -0.0, -0.0, 0.0 Lamps=off Galil=off
         """
         # lowerify everything
-        # print("M2 reply: ", replyStr)
+        print("M2 reply: ", replyStr)
         try:
             replyStr = replyStr.strip().lower()
             if replyStr == "ok":
@@ -77,9 +85,13 @@ class M2Device(Protocol):
                     if key == "state":
                         if val == "error":
                             print("Error from M2: %s"%replyStr)
-                        else:
-                            val = val.title()
-                            self.state = val
+                        val = val.title()
+                        # check if we moved from
+                        # moving state to a not moving state
+                        # and if so turn off the galil
+                        if self.state == Moving and val != Moving:
+                            self.galilOff()
+                        self.state = val
                     elif key == "ori":
                         key = "orientation"
                         self.orientation = [float(x) for x in val.split(",")]
